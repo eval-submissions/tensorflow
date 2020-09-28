@@ -26,6 +26,7 @@ limitations under the License.
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/public/session_options.h"
 
+
 namespace tensorflow {
 
 // A placement algorithm that assigns the nodes of the given Graph to
@@ -85,6 +86,7 @@ class Placer {
   // This method is not thread-safe.
   // Run() may be invoked at most once.
   Status Run();
+  void LogAllNodesDevice();
 
  private:
   // Returns true if the device type of 'candidate_device_name' is

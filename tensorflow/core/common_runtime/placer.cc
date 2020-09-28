@@ -30,6 +30,9 @@ limitations under the License.
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/util/dump_graph.h"
 #include "tensorflow/core/util/port.h"
+#include <iostream>
+#include <fstream>
+using namespace std;
 
 namespace tensorflow {
 
@@ -230,7 +233,25 @@ Status Placer::Run() {
   if (VLOG_IS_ON(3)) {
     DumpGraphToFile("placer_output", *graph_, nullptr);
   }
+  //Log all device in a file for strategy calculator
+  LogAllNodesDevice();
+
   return Status::OK();
+}
+
+void Placer::LogAllNodesDevice(){
+	  ofstream myfile;
+	  myfile.open("real_device_assignment.log");
+	  string txt;
+	for (Node* node : graph_->op_nodes()){
+		txt+=node->name();
+		txt+=",";
+		txt+=node->assigned_device_name();
+		txt+="\n";
+
+	}
+	  myfile <<txt;
+	  myfile.close();
 }
 
 bool Placer::CanAssignToDevice(const string& candidate_device_name,

@@ -248,6 +248,8 @@ class ColocationGraph {
 
   string DebugString() const;
 
+  Status LogNodesMustInGpu();
+
  private:
   // Adds each node of the Graph to this ColocationGraph as a singleton.
   //
@@ -350,6 +352,7 @@ class ColocationGraph {
   const Device* default_device_;
   const bool allow_soft_placement_;
   const bool log_device_placement_;
+  std::string node_must_in_cpu;
 
   TF_DISALLOW_COPY_AND_ASSIGN(ColocationGraph);
 };

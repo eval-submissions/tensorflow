@@ -21,11 +21,13 @@ limitations under the License.
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <iostream>
+#include <fstream>
+using namespace std;
 
 #include "absl/strings/str_join.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/function.h"
-#include "tensorflow/core/common_runtime/input_colocation_exemption_registry.h"
 #include "tensorflow/core/common_runtime/inspecting_placer.h"
 #include "tensorflow/core/common_runtime/partitioning_utils.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
@@ -151,8 +153,8 @@ bool IsExemptFromResourceInputColocation(const Node* node) {
   // ref inputs to operations that are appropriately placed, instead of
   // dereferencing them.
   const string& op_type = node->op_def().name();
-  auto exempt_ops = InputColocationExemptionRegistry::Global()->Get();
-  return exempt_ops.find(op_type) != exempt_ops.end();
+  return op_type == "PartitionedCall" || op_type == "StatefulPartitionedCall" ||
+         op_type == "ReduceDataset" || op_type == "ExperimentalScanDataset";
 }
 
 bool HasPriorities(const PrioritizedDeviceTypeVector& device_types) {
@@ -748,6 +750,8 @@ Status ColocationGraph::AddInspectionConstraints(
 Status ColocationGraph::Initialize() {
   TF_RETURN_IF_ERROR(InitializeMembers());
 
+  TF_RETURN_IF_ERROR(LogNodesMustInGpu());
+
   std::unordered_set<Node*> inspection_required;
   TF_RETURN_IF_ERROR(ColocateResourceAndRefEdges(&inspection_required));
   TF_RETURN_IF_ERROR(AddInspectionConstraints(inspection_required));
@@ -1295,6 +1299,27 @@ Status ColocationGraph::InitializeMemberWithAssignedDevice(
 Status ColocationGraph::InitializeMember(const Node& node, Member* member) {
   TF_RETURN_IF_ERROR(member->SetParentAndSupportedDevices(node, device_types_));
 
+
+
+
+  bool have_gpu = false;
+
+  for (auto item : member->supported_device_types()){
+  	auto device = item.first;
+  	string device_string = device.type_string();
+  	if (device_string.find("GPU")!=std::string::npos||device_string.find("gpu")!=std::string::npos){
+  		have_gpu = true;
+  		break;
+  	}
+
+  }
+  if(have_gpu==false){
+  	node_must_in_cpu+=node.name();
+  	node_must_in_cpu+=",";
+  }
+
+
+
   if (node.has_assigned_device_name()) {
     TF_RETURN_IF_ERROR(InitializeMemberWithAssignedDevice(
         node.assigned_device_name(), node.type_string(), member));
@@ -1339,5 +1364,13 @@ Status ColocationGraph::InitializeMember(const Node& node, Member* member) {
   }
   return Status::OK();
 }
+
+Status ColocationGraph::LogNodesMustInGpu(){
+	  ofstream myfile;
+	  myfile.open("nodes_must_in_cpu.log");
+	  myfile <<node_must_in_cpu;
+	  myfile.close();
+	  return Status::OK();
+  }
 
 }  // namespace tensorflow
