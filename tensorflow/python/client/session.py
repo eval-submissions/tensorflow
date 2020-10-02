@@ -41,6 +41,7 @@ from tensorflow.python.training.experimental import mixed_precision_global_state
 from tensorflow.python.util import compat
 from tensorflow.python.util import nest
 from tensorflow.python.util.tf_export import tf_export
+from tensorflow.python.util.strategy_calculator import *
 
 
 class SessionInterface(object):
@@ -648,6 +649,15 @@ class BaseSession(SessionInterface):
         raise TypeError('graph must be a tf.Graph, but got %s' % type(graph))
       self._graph = graph
 
+
+    self._placer = Placer(self._graph,2,128)
+    self._profiling_counter = 0
+    #if self._placer.need_profile():
+    self._placer.activate_place()
+    graphdef_filename = 'graph.pbtxt'
+    logging.info('Writing graphdef to %s', graphdef_filename)
+    file_io.write_string_to_file(graphdef_filename, str(self._graph.as_graph_def()))
+
     self._opened = False
     self._closed = False
 
@@ -941,6 +951,42 @@ class BaseSession(SessionInterface):
       ValueError: If `fetches` or `feed_dict` keys are invalid or refer to a
         `Tensor` that doesn't exist.
     """
+    period = 45
+    times = 1
+    is_train_op = False
+    ops_to_fetch = list()
+    profile_step = False
+
+
+    if self._placer.need_profile():
+      with self._graph.as_default():
+        #print("in run graph version:%s" % self._graph.version)
+        fetch_mapper = _FetchMapper.for_fetch(fetches)
+      for fetch in fetch_mapper.unique_fetches():
+        if isinstance(fetch, ops.Tensor):
+          op = fetch.op
+        else:
+          assert isinstance(fetch, ops.Operation)
+          op = fetch
+        ops_to_fetch.append(op)
+        if "train_op" in op.name or "group_deps_1" in op.name or "GradientDescent" in op.name or "AssignAdd" in op.name:
+          #self._placer.add_control_input()
+          print("train op = true")
+          is_train_op = True
+          self._profiling_counter +=1
+          if self._profiling_counter >= period:
+            #print("need profile, prepare run_metadata")
+            profile_step = True
+            options = config_pb2.RunOptions(
+              trace_level=config_pb2.RunOptions.FULL_TRACE,output_partition_graphs=True)
+            run_metadata = config_pb2.RunMetadata()
+    #print("ops to fetch:")
+    #print([op.name for op in ops_to_fetch])
+
+
+    if not profile_step and is_train_op:
+      self._placer.start_time = time.time()
+
     options_ptr = tf_session.TF_NewBufferFromString(
         compat.as_bytes(options.SerializeToString())) if options else None
     run_metadata_ptr = tf_session.TF_NewBuffer() if run_metadata else None
@@ -956,6 +1002,54 @@ class BaseSession(SessionInterface):
         tf_session.TF_DeleteBuffer(run_metadata_ptr)
       if options:
         tf_session.TF_DeleteBuffer(options_ptr)
+
+    if not profile_step and is_train_op:
+      self._placer.end_time = time.time()
+      self._placer.makespan.append(self._placer.end_time-self._placer.start_time)
+      self._placer.counter+=1
+      #rint("makespan:%f"%self._placer.makespan)
+
+
+    if is_train_op and self._profiling_counter >=period:
+      if self._placer.need_profile():
+        self._placer._read_real_device_placement()
+        self._placer._update_place_strategy()
+        self._placer.update_cost_model(run_metadata)
+
+    if self._profiling_counter == period+times:
+      self._profiling_counter = 0
+      if self._placer.need_profile():
+        self._placer.makespan.remove(max(self._placer.makespan))
+        tl = timeline.Timeline(run_metadata.step_stats)
+        trace = tl.generate_chrome_trace_format()
+        trace_filename = "tf_trace-%f.json"%((np.mean(self._placer.makespan)))
+        logging.info('Writing trace to %s', trace_filename)
+        file_io.write_string_to_file(trace_filename, trace)
+
+        metadata_filename = 'run_metadata-%f.pbtxt'%(np.mean(self._placer.makespan))
+        logging.info('Writing run_metadata to %s', metadata_filename)
+        file_io.write_string_to_file(metadata_filename, str(run_metadata))
+        #self._placer._print_cost_model()
+        print("-------------print edge model!!!!---------------")
+        self._placer._print_edge_model()
+        print("name_of_ops_to_fetch")
+        print([ op.name for op in ops_to_fetch])
+        #print(self._placer.makespan)
+        print("real time for this strategy:%f"%(np.mean(self._placer.makespan)))
+        self._placer._report_time_for_current_strategy(np.mean(self._placer.makespan))
+        self._placer.calculate_place_strategy(ops_to_fetch)
+        self._placer.save_cost_model()
+        self._placer.save_place_strategy()
+        self._placer.save_best_strategy_result()
+        if self._placer.need_profile():
+          import sys
+          import os
+          print("restart")
+          python = sys.executable
+          os.execl(python, python, *sys.argv)
+        else:
+          print("no need to restart")
+
     return result
 
   def partial_run(self, handle, fetches, feed_dict=None):
